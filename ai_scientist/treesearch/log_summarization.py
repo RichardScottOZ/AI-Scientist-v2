@@ -2,16 +2,14 @@ import json
 import os
 import sys
 
-import openai
-
 from .journal import Node, Journal
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 sys.path.insert(0, parent_dir)
-from ai_scientist.llm import get_response_from_llm, extract_json_between_markers
+from ai_scientist.llm import get_response_from_llm, extract_json_between_markers, create_client
 
-client = openai.OpenAI()
-model = "gpt-4o-2024-08-06"
+# Create OpenRouter client
+client, model = create_client("gpt-4o-2024-11-20-OR")
 
 report_summarizer_sys_msg = """You are an expert machine learning researcher.
 You are given multiple experiment logs, each representing a node in a stage of exploring scientific ideas and implementations.
@@ -149,11 +147,15 @@ def get_summarizer_prompt(journal, stage_name):
     )
 
 
-def get_stage_summary(journal, stage_name, model, client):
-    sys_msg, prompt = get_summarizer_prompt(journal, stage_name)
-    response = get_response_from_llm(prompt, client, model, sys_msg)
-    summary_json = extract_json_between_markers(response[0])
-    return summary_json
+def get_stage_summary(journal, stage_name):
+    """Get a summary of a stage using the OpenRouter client"""
+    prompt = get_summarizer_prompt(journal, stage_name)
+    return get_response_from_llm(
+        prompt=prompt,
+        client=client,
+        model=model,
+        system_message=report_summarizer_sys_msg
+    )
 
 
 def get_node_log(node):
@@ -199,8 +201,9 @@ def get_node_log(node):
 
 
 def update_summary(
-    prev_summary, cur_stage_name, cur_journal, cur_summary, model, client, max_retry=5
+    prev_summary, cur_stage_name, cur_journal, cur_summary, max_retry=5
 ):
+    """Update the summary using the OpenRouter client"""
     good_leaf_nodes = [n for n in cur_journal.good_nodes if n.is_leaf]
     node_infos = get_nodes_infos(good_leaf_nodes)
     prompt = stage_aggregate_prompt.format(
@@ -210,7 +213,10 @@ def update_summary(
     )
     try:
         response = get_response_from_llm(
-            prompt, client, model, "You are an expert machine learning researcher."
+            prompt=prompt,
+            client=client,
+            model=model,
+            system_message=report_summarizer_sys_msg
         )
         summary_json = extract_json_between_markers(response[0])
         assert summary_json
@@ -222,9 +228,7 @@ def update_summary(
                 cur_stage_name,
                 cur_journal,
                 cur_summary,
-                model,
-                client,
-                max_retry - 1,
+                max_retry - 1
             )
         else:
             print(f"Failed to update summary after multiple attempts. Error: {e}")
@@ -263,6 +267,7 @@ Ensure the JSON is valid and properly formatted, as it will be automatically par
 
 
 def annotate_history(journal):
+    """Annotate the history using the OpenRouter client"""
     for node in journal.nodes:
         if node.parent:
             max_retries = 3
@@ -270,13 +275,13 @@ def annotate_history(journal):
             while retry_count < max_retries:
                 try:
                     response = get_response_from_llm(
-                        overall_plan_summarizer_prompt.format(
+                        prompt=overall_plan_summarizer_prompt.format(
                             prev_overall_plan=node.parent.overall_plan,
                             current_plan=node.plan,
                         ),
-                        client,
-                        model,
-                        report_summarizer_sys_msg,
+                        client=client,
+                        model=model,
+                        system_message=report_summarizer_sys_msg
                     )
                     node.overall_plan = extract_json_between_markers(response[0])[
                         "overall_plan"
@@ -292,6 +297,12 @@ def annotate_history(journal):
                     )
         else:
             node.overall_plan = node.plan
+    return get_response_from_llm(
+        prompt=prompt,
+        client=client,
+        model=model,
+        system_message=report_summarizer_sys_msg
+    )
 
 
 def overall_summarize(journals):
@@ -336,7 +347,7 @@ def overall_summarize(journals):
             ]
             return [get_node_log(n) for n in good_leaf_nodes]
         elif idx == 0:
-            summary_json = get_stage_summary(journal, stage_name, model, client)
+            summary_json = get_stage_summary(journal, stage_name)
             return summary_json
 
     from tqdm import tqdm
