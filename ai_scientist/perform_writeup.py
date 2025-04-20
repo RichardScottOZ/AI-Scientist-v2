@@ -150,189 +150,107 @@ def get_citation_addition(
     client, model, context, current_round, total_rounds, idea_text
 ):
     report, citations = context
-    msg_history = []
-    citation_system_msg_template = """You are an ambitious AI researcher who is looking to publish a paper to a top-tier ML conference that will contribute significantly to the field.
-You have already completed the experiments and now you are looking to collect citations to related papers.
-This phase focuses on collecting references and annotating them to be integrated later.
-Collected citations will be added to a references.bib file.
 
-Reasons to reference papers include:
-1. Summarizing Research: Cite sources when summarizing the existing literature.
-2. Using Specific Concepts or Data: Provide citations when discussing specific theories, models, or data.
-3. Comparing Findings: Cite relevant studies when comparing or contrasting different findings.
-4. Highlighting Research Gaps: Cite previous research when pointing out gaps your survey addresses.
-5. Using Established Methods: Cite the creators of methodologies you employ in your survey.
-6. Supporting Arguments: Cite sources that back up your conclusions and arguments.
-7. Suggesting Future Research: Reference studies related to proposed future research directions.
+    # First, search for papers
+    search_prompt = f"""You are a helpful assistant that helps find relevant papers for a research project.
+The project is about: {idea_text}
 
-Ensure sufficient cites will be collected for all of these categories, and no categories are missed.
-You will be given access to the Semantic Scholar API; only add citations that you have found using the API.
-Aim to discuss a broad range of relevant papers, not just the most popular ones.
-Make sure not to copy verbatim from prior literature to avoid plagiarism.
-You will have {total_rounds} rounds to add to the references but do not need to use them all.
-
-DO NOT ADD A CITATION THAT ALREADY EXISTS!"""
-
-    citation_first_prompt_template = """Round {current_round}/{total_rounds}:
-
-You planned and executed the following idea:
-```markdown
-{Idea}
-```
-
-You produced the following report:
-```markdown
-{report}
-```
-
-Your current list of citations is:
-```
+Current citations in the paper:
+```bibtex
 {citations}
 ```
 
-Identify the most important citation that you still need to add, and the query to find the paper.
+Please search for relevant papers that would be good citations for this work.
+Return a list of paper titles and authors that would be good to cite, focusing on papers that:
+1. Are highly relevant to the technical approach
+2. Are recent (preferably within the last 5 years)
+3. Are from top venues
+4. Are not already in the citations list
 
-Respond in the following format:
-
-THOUGHT:
-<THOUGHT>
-
-RESPONSE:
+Return ONLY a JSON object with the following structure, nothing else:
 ```json
-<JSON>
+{{
+    "papers": [
+        {{
+            "title": "Paper Title",
+            "authors": "Author1, Author2, ...",
+            "venue": "Conference/Journal Name",
+            "year": YYYY
+        }}
+    ]
+}}
 ```
 
-In <THOUGHT>, first briefly reason and identify which citations are missing.
-If no more citations are needed, add "No more citations needed" to your thoughts.
-Do not add "No more citations needed" if you are adding citations this round.
-
-In <JSON>, respond in JSON format with the following fields:
-- "Description": The purpose of the desired citation and a brief description of what you are looking for.
-- "Query": The search query to find the paper (e.g., attention is all you need).
-This JSON will be automatically parsed, so ensure the format is precise."""
-
-    citation_second_prompt_template = """Search has recovered the following articles:
-
-{papers}
-
-Respond in the following format:
-
-THOUGHT:
-<THOUGHT>
-
-RESPONSE:
-```json
-<JSON>
-```
-
-In <THOUGHT>, first briefly reason over the search results and identify which citation(s) best fit your paper.
-If none are appropriate or would contribute significantly to the write-up, add "Do not add any" to your thoughts.
-Do not select papers that are already in the `references.bib` file, or if the same citation exists under a different name.
-
-In <JSON>, respond in JSON format with the following fields:
-- "Selected": A list of integer indices for the selected papers, for example [0, 1]. Do not use quotes for the indices, e.g. "['0', '1']" is invalid.
-- "Description": Update the previous description of the citation(s) with the additional context. This should be a brief description of the work(s), their relevance, and where in a paper these should be cited.
-This JSON will be automatically parsed, so ensure the format is precise."""
+Do not include any additional text, explanations, or markdown formatting. Return ONLY the JSON object."""
 
     try:
         text, msg_history = get_response_from_llm(
-            msg=citation_first_prompt_template.format(
-                current_round=current_round + 1,
-                total_rounds=total_rounds,
-                Idea=idea_text,
-                report=report,
-                citations=citations,
-            ),
+            prompt=search_prompt,
             client=client,
             model=model,
-            system_message=citation_system_msg_template.format(
-                total_rounds=total_rounds
-            ),
-            msg_history=msg_history,
-            print_debug=False,
+            system_message="You are a helpful assistant that helps find relevant academic papers. Return only JSON responses.",
+            print_debug=True,  # Enable debug to see the response
         )
-        if "No more citations needed" in text:
-            print("No more citations needed.")
-            return None, True
-
-        json_output = extract_json_between_markers(text)
-        assert json_output is not None, "Failed to extract JSON from LLM output"
-        query = json_output["Query"]
-        papers = search_for_papers(query)
-    except Exception:
-        print("EXCEPTION in get_citation_addition (initial search):")
+        
+        # Clean up the response to extract just the JSON
+        if "```json" in text:
+            text = text.split("```json")[1].split("```")[0].strip()
+        elif "```" in text:
+            text = text.split("```")[1].split("```")[0].strip()
+            
+        print(f"Cleaned response: {text}")  # Debug print
+        
+        papers = json.loads(text)["papers"]
+    except Exception as e:
+        print("EXCEPTION in get_citation_addition (parsing papers):")
+        print(f"Error: {str(e)}")
+        print(f"Response text: {text}")
         print(traceback.format_exc())
         return None, False
 
-    if papers is None:
-        print("No papers found.")
-        return None, False
+    # For each paper, get the bibtex entry
+    bibtex_entries = []
+    for paper in papers:
+        bibtex_prompt = f"""Please provide a complete bibtex entry for the following paper:
+Title: {paper['title']}
+Authors: {paper['authors']}
+Venue: {paper['venue']}
+Year: {paper['year']}
 
-    paper_strings = []
-    for i, paper in enumerate(papers):
-        paper_strings.append(
-            "{i}: {title}. {authors}. {venue}, {year}.\nAbstract: {abstract}".format(
-                i=i,
-                title=paper["title"],
-                authors=paper["authors"],
-                venue=paper["venue"],
-                year=paper["year"],
-                abstract=paper["abstract"],
+Return ONLY the bibtex entry, nothing else. Do not include any explanations or markdown formatting."""
+
+        try:
+            bibtex_text, _ = get_response_from_llm(
+                prompt=bibtex_prompt,
+                client=client,
+                model=model,
+                system_message="You are a helpful assistant that generates bibtex entries. Return only the bibtex entry.",
+                print_debug=True,  # Enable debug to see the response
             )
-        )
-    papers_str = "\n\n".join(paper_strings)
+            
+            # Clean up the response to extract just the bibtex
+            if "```" in bibtex_text:
+                bibtex_text = bibtex_text.split("```")[1].split("```")[0].strip()
+            
+            bibtex_entries.append(bibtex_text.strip())
+        except Exception as e:
+            print(f"EXCEPTION in get_citation_addition (bibtex for {paper['title']}):")
+            print(f"Error: {str(e)}")
+            print(f"Response text: {bibtex_text}")
+            print(traceback.format_exc())
+            continue
 
-    try:
-        text, msg_history = get_response_from_llm(
-            msg=citation_second_prompt_template.format(
-                papers=papers_str,
-                current_round=current_round + 1,
-                total_rounds=total_rounds,
-            ),
-            client=client,
-            model=model,
-            system_message=citation_system_msg_template.format(
-                total_rounds=total_rounds
-            ),
-            msg_history=msg_history,
-            print_debug=False,
-        )
-        if "Do not add any" in text:
-            print("Do not add any.")
-            return None, False
-
-        json_output = extract_json_between_markers(text)
-        assert json_output is not None, "Failed to extract JSON from LLM output"
-        desc = json_output["Description"]
-        selected_papers = str(json_output["Selected"])
-
-        if selected_papers != "[]":
-            selected_indices = []
-            for x in selected_papers.strip("[]").split(","):
-                x_str = x.strip().strip('"').strip("'")
-                if x_str:
-                    selected_indices.append(int(x_str))
-            assert all(
-                [0 <= i < len(papers) for i in selected_indices]
-            ), "Invalid paper index"
-            bibtexs = [papers[i]["citationStyles"]["bibtex"] for i in selected_indices]
-
-            cleaned_bibtexs = []
-            for bibtex in bibtexs:
-                newline_index = bibtex.find("\n")
-                cite_key_line = bibtex[:newline_index]
-                cite_key_line = remove_accents_and_clean(cite_key_line)
-                cleaned_bibtexs.append(cite_key_line + bibtex[newline_index:])
-            bibtexs = cleaned_bibtexs
-
-            bibtex_string = "\n".join(bibtexs)
-        else:
-            return None, False
-
-    except Exception:
-        print("EXCEPTION in get_citation_addition (selecting papers):")
-        print(traceback.format_exc())
+    if not bibtex_entries:
         return None, False
+
+    # Combine all bibtex entries
+    bibtex_string = "\n".join(bibtex_entries)
+
+    # Check if we should continue searching
+    if current_round >= total_rounds - 1:
+        desc = "Final round of citations"
+    else:
+        desc = f"Round {current_round + 1} of {total_rounds}"
 
     references_format = """% {description}
 {bibtex}"""
@@ -599,13 +517,17 @@ def perform_writeup(
                     "images": [ppath],
                     "caption": "No direct caption",
                 }
-                review_data = generate_vlm_img_review(img_dict, vlm_model, vlm_client)
-                if review_data:
-                    desc_map[pf] = review_data.get(
-                        "Img_description", "No description found"
-                    )
-                else:
-                    desc_map[pf] = "No description found"
+                try:
+                    review_data = generate_vlm_img_review(img_dict, vlm_model, vlm_client)
+                    if review_data:
+                        desc_map[pf] = review_data.get(
+                            "Img_description", "No description found"
+                        )
+                    else:
+                        desc_map[pf] = "No description found"
+                except Exception as e:
+                    print(f"Warning: Could not generate VLM description for {pf}: {e}")
+                    desc_map[pf] = "No description available"
 
             # Prepare a string listing all figure descriptions in order
             plot_descriptions_list = []
@@ -614,8 +536,7 @@ def perform_writeup(
                 plot_descriptions_list.append(f"{fname}: {desc_text}")
             plot_descriptions_str = "\n".join(plot_descriptions_list)
         except Exception:
-            print("EXCEPTION in VLM figure description generation:")
-            print(traceback.format_exc())
+            print("Warning: VLM figure description generation failed, continuing without descriptions")
             plot_descriptions_str = "No descriptions available."
 
         # Construct final prompt for big model, placing the figure descriptions alongside the plot list
@@ -636,7 +557,7 @@ def perform_writeup(
         )
 
         response, msg_history = get_response_from_llm(
-            msg=combined_prompt,
+            prompt=combined_prompt,
             client=big_client,
             model=big_client_model,
             system_message=big_model_system_message,
@@ -707,7 +628,7 @@ If you believe you are done, simply say: "I am done".
 """
 
             reflection_response, msg_history = get_response_from_llm(
-                msg=reflection_prompt,
+                prompt=reflection_prompt,
                 client=big_client,
                 model=big_client_model,
                 system_message=big_model_system_message,
@@ -765,18 +686,24 @@ if __name__ == "__main__":
     parser.add_argument("--folder", type=str, help="Project folder", required=True)
     parser.add_argument("--no-writing", action="store_true", help="Only generate")
     parser.add_argument("--num-cite-rounds", type=int, default=20)
+    
+    # Create a list of available models including OpenRouter versions
+    available_models = AVAILABLE_LLMS.copy()
+    openrouter_models = [f"{model}-OR" for model in AVAILABLE_LLMS if "gpt" in model or "o1" in model or "o3" in model]
+    available_models.extend(openrouter_models)
+    
     parser.add_argument(
         "--model",
         type=str,
-        default="bedrock/anthropic.claude-3-5-sonnet-20240620-v1:0",
-        choices=AVAILABLE_LLMS,
+        default="gpt-4o-2024-11-20-OR",
+        choices=available_models,
         help="Model to use for citation collection (small model).",
     )
     parser.add_argument(
         "--big-model",
         type=str,
-        default="o1-2024-12-17",
-        choices=AVAILABLE_LLMS,
+        default="gpt-4o-2024-11-20-OR",
+        choices=available_models,
         help="Model to use for final writeup (big model).",
     )
     parser.add_argument(
