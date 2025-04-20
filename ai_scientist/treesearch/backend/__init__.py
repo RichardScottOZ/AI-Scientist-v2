@@ -1,6 +1,8 @@
-from . import backend_anthropic, backend_openai
+from . import backend_anthropic, backend_openai, backend_openrouter
 from .utils import FunctionSpec, OutputType, PromptType, compile_prompt_to_md
 
+# Global variable to track which backend to use
+_current_backend = None
 
 def query(
     system_message: PromptType | None,
@@ -27,6 +29,8 @@ def query(
         OutputType: A string completion if func_spec is None, otherwise a dict with the function call details.
     """
 
+    global _current_backend
+
     model_kwargs = model_kwargs | {
         "model": model,
         "temperature": temperature,
@@ -52,12 +56,21 @@ def query(
     else:
         model_kwargs["max_tokens"] = max_tokens
 
-    query_func = backend_anthropic.query if "claude-" in model else backend_openai.query
+    # Choose the appropriate backend based on the model
+    # First check if it's an OpenRouter model
+    if model in backend_openrouter.MODEL_MAPPING or any(
+        model.startswith(prefix) for prefix in ["claude-", "gpt-", "llama", "deepseek"]
+    ):
+        query_func = backend_openrouter.query
+    elif "claude-" in model:
+        query_func = backend_anthropic.query
+    elif model.startswith("gpt-") or model.startswith("o1"):
+        query_func = backend_openai.query
+    else:
+        raise ValueError(f"Model {model} not supported.")
+
     output, req_time, in_tok_count, out_tok_count, info = query_func(
-        system_message=compile_prompt_to_md(system_message) if system_message else None,
-        user_message=compile_prompt_to_md(user_message) if user_message else None,
-        func_spec=func_spec,
-        **model_kwargs,
+        system_message, user_message, func_spec, **model_kwargs
     )
 
     return output
