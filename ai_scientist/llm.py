@@ -391,6 +391,15 @@ def create_client(model) -> tuple[Any, str]:
         client_model = model.split("/")[-1]
         print(f"Using Vertex AI with model {client_model}.")
         return anthropic.AnthropicVertex(), client_model
+    elif "gpt" in model and "-OR" in model:
+        print(f"Using OpenRouter API with model {model}.")
+        return (
+            openai.OpenAI(
+                api_key=os.environ["OPENROUTER_API_KEY"],
+                base_url="https://openrouter.ai/api/v1",
+            ),
+            model.replace("-OR", ""),
+        )
     elif "gpt" in model:
         print(f"Using OpenAI API with model {model}.")
         return openai.OpenAI(), model
@@ -419,7 +428,7 @@ def create_client(model) -> tuple[Any, str]:
             model,
         )
     elif model == "llama3.1-405b":
-        print(f"Using OpenAI API with {model}.")
+        print(f"Using OpenRouter API with {model}.")
         return (
             openai.OpenAI(
                 api_key=os.environ["OPENROUTER_API_KEY"],
