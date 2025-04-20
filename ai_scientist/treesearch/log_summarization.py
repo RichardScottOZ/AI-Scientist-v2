@@ -149,12 +149,12 @@ def get_summarizer_prompt(journal, stage_name):
 
 def get_stage_summary(journal, stage_name):
     """Get a summary of a stage using the OpenRouter client"""
-    prompt = get_summarizer_prompt(journal, stage_name)
+    system_message, prompt = get_summarizer_prompt(journal, stage_name)
     return get_response_from_llm(
         prompt=prompt,
         client=client,
         model=model,
-        system_message=report_summarizer_sys_msg
+        system_message=system_message
     )
 
 
@@ -267,41 +267,19 @@ Ensure the JSON is valid and properly formatted, as it will be automatically par
 
 
 def annotate_history(journal):
-    """Annotate the history using the OpenRouter client"""
-    for node in journal.nodes:
-        if node.parent:
-            max_retries = 3
-            retry_count = 0
-            while retry_count < max_retries:
-                try:
-                    response = get_response_from_llm(
-                        prompt=overall_plan_summarizer_prompt.format(
-                            prev_overall_plan=node.parent.overall_plan,
-                            current_plan=node.plan,
-                        ),
-                        client=client,
-                        model=model,
-                        system_message=report_summarizer_sys_msg
-                    )
-                    node.overall_plan = extract_json_between_markers(response[0])[
-                        "overall_plan"
-                    ]
-                    break
-                except Exception as e:
-                    retry_count += 1
-                    if retry_count == max_retries:
-                        print(f"Failed after {max_retries} attempts. Error: {e}")
-                        raise
-                    print(
-                        f"Error occurred: {e}. Retrying... ({max_retries - retry_count} attempts left)"
-                    )
-        else:
-            node.overall_plan = node.plan
+    client, model = create_client("gpt-4o-2024-11-20-OR")
+    
+    # Get the stage name from the journal
+    stage_name = journal.stage_name if hasattr(journal, 'stage_name') else "unknown"
+    
+    # Get the prompt for this stage
+    system_message, prompt = get_summarizer_prompt(journal, stage_name)
+    
     return get_response_from_llm(
         prompt=prompt,
         client=client,
         model=model,
-        system_message=report_summarizer_sys_msg
+        system_message=system_message
     )
 
 
