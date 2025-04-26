@@ -7,6 +7,7 @@ from ai_scientist.utils.token_tracker import track_token_usage
 import anthropic
 import backoff
 import openai
+import google.generativeai as genai
 
 MAX_NUM_TOKENS = 4096
 
@@ -31,6 +32,11 @@ AVAILABLE_LLMS = [
     "o1-mini-2024-09-12",
     "o3-mini",
     "o3-mini-2025-01-31",
+    # Google Gemini models
+    "gemini-1.5-pro",
+    "gemini-1.5-pro-latest",
+    "gemini-1.5-pro-OR",
+    "gemini-1.5-pro-latest-OR",
     # DeepSeek Models
     "deepseek-coder-v2-0724",
     "deepcoder-14b",
@@ -76,7 +82,58 @@ def get_batch_responses_from_llm(
     if msg_history is None:
         msg_history = []
 
-    if "gpt" in model:
+    if "claude" in model and "-OR" in model:
+        # Handle Claude models through OpenRouter using chat completions
+        new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        response = client.chat.completions.create(
+            model=model.replace("-OR", ""),
+            messages=[
+                {"role": "system", "content": system_message},
+                *new_msg_history,
+            ],
+            temperature=temperature,
+            max_tokens=MAX_NUM_TOKENS,
+            n=n_responses,
+        )
+        content = [r.message.content for r in response.choices]
+        new_msg_history = [
+            new_msg_history + [{"role": "assistant", "content": c}] for c in content
+        ]
+    elif "claude" in model:
+        new_msg_history = msg_history + [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": msg,
+                    }
+                ],
+            }
+        ]
+        response = client.messages.create(
+            model=model,
+            max_tokens=MAX_NUM_TOKENS,
+            temperature=temperature,
+            system=system_message,
+            messages=new_msg_history,
+        )
+        content = [response.content[0].text]
+        new_msg_history = [
+            new_msg_history + [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": c,
+                        }
+                    ],
+                }
+            ]
+            for c in content
+        ]
+    elif "gpt" in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = client.chat.completions.create(
             model=model,
@@ -158,7 +215,46 @@ def get_batch_responses_from_llm(
 
 @track_token_usage
 def make_llm_call(client, model, temperature, system_message, prompt):
-    if "gpt" in model:
+    if model.startswith("gemini") and "-OR" in model:
+        print(f"Debug: Using OpenRouter API for Gemini model: {model}")
+        # Remove the -OR suffix for the actual model name
+        model = model.replace("-OR", "")
+        # Add the google/ prefix for OpenRouter
+        if not model.startswith("google/"):
+            model = f"google/{model}"
+        print(f"Debug: Final model ID: {model}")
+        
+        # Build message history in OpenAI format
+        new_msg_history = []
+        if system_message:
+            new_msg_history.append({"role": "system", "content": system_message})
+        for msg in prompt:
+            new_msg_history.append({"role": msg["role"], "content": msg["content"]})
+        new_msg_history.append({"role": "user", "content": prompt[-1]["content"]})
+        
+        # Make the API call
+        response = client.chat.completions.create(
+            model=model,
+            messages=new_msg_history,
+            temperature=temperature,
+            max_tokens=MAX_NUM_TOKENS,
+        )
+        return type('obj', (object,), {'choices': [type('obj', (object,), {'message': type('obj', (object,), {'content': response.choices[0].message.content})()})()]})
+    elif "claude" in model and "-OR" in model:
+        # Handle Claude models through OpenRouter using chat completions
+        model_id = "anthropic/claude-3.5-sonnet"
+        print(f"Debug: Using model ID in make_llm_call: {model_id}")
+        return client.chat.completions.create(
+            model=model_id,
+            messages=[
+                {"role": "system", "content": system_message},
+                *prompt,
+            ],
+            temperature=temperature,
+            max_tokens=MAX_NUM_TOKENS,
+            n=1,
+        )
+    elif "gpt" in model:
         return client.chat.completions.create(
             model=model,
             messages=[
@@ -208,38 +304,108 @@ def get_response_from_llm(
     if msg_history is None:
         msg_history = []
 
-    if "claude" in model:
-        new_msg_history = msg_history + [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": msg,
-                    }
+    print(f"Debug: Model type: {model}")
+    print(f"Debug: Client type: {type(client)}")
+
+    if model.startswith("gemini"):
+        print(f"Debug: Using OpenRouter API for Gemini model: {model}")
+        # Remove any -OR suffix if present
+        model = model.replace("-OR", "")
+        # Use the correct OpenRouter model ID format
+        model = "google/gemini-2.5-pro-preview-03-25"
+        print(f"Debug: Final model ID: {model}")
+        
+        # Build message history in OpenAI format
+        new_msg_history = []
+        if system_message:
+            print("Debug: Adding system message")
+            new_msg_history.append({"role": "system", "content": system_message})
+        
+        if msg_history:
+            print(f"Debug: Processing {len(msg_history)} existing messages")
+            for i, msg in enumerate(msg_history):
+                print(f"Debug: Message {i}: role={msg['role']}, content length={len(msg['content'])}")
+                new_msg_history.append({"role": msg["role"], "content": msg["content"]})
+        
+        print(f"Debug: Adding current user message: {len(msg)} characters")
+        new_msg_history.append({"role": "user", "content": msg})
+        
+        print(f"Debug: Final message count: {len(new_msg_history)}")
+        print("Debug: Message structure:")
+        for i, msg in enumerate(new_msg_history):
+            print(f"  {i}. {msg['role']}: {len(msg['content'])} chars")
+        
+        try:
+            # Make the API call
+            print("Debug: Making API call to OpenRouter")
+            response = client.chat.completions.create(
+                model=model,
+                messages=new_msg_history,
+                temperature=temperature,
+                max_tokens=MAX_NUM_TOKENS,
+            )
+            print("Debug: API call completed successfully")
+            content = response.choices[0].message.content
+            print(f"Debug: Response length: {len(content)} characters")
+            
+            # Update message history
+            new_msg_history.append({"role": "assistant", "content": content})
+            print("Debug: Returning response and updated message history")
+            return content, new_msg_history
+        except Exception as e:
+            print(f"Debug: Error in API call: {str(e)}")
+            raise
+    elif "claude" in model:
+        # Handle all Claude models (including OpenRouter) through chat completions
+        new_msg_history = msg_history + [{"role": "user", "content": msg}]
+        if isinstance(client, openai.OpenAI):  # OpenRouter case
+            print("Debug: Using OpenRouter for Claude model")
+            # Use the correct OpenRouter model ID format
+            model_id = "anthropic/claude-3.5-sonnet"
+            print(f"Debug: Using model ID: {model_id}")
+            response = client.chat.completions.create(
+                model=model_id,
+                messages=[
+                    {"role": "system", "content": system_message},
+                    *new_msg_history,
                 ],
-            }
-        ]
-        response = client.messages.create(
-            model=model,
-            max_tokens=MAX_NUM_TOKENS,
-            temperature=temperature,
-            system=system_message,
-            messages=new_msg_history,
-        )
-        # response = make_llm_call(client, model, temperature, system_message=system_message, prompt=new_msg_history)
-        content = response.content[0].text
-        new_msg_history = new_msg_history + [
-            {
-                "role": "assistant",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": content,
-                    }
-                ],
-            }
-        ]
+                temperature=temperature,
+                max_tokens=MAX_NUM_TOKENS,
+            )
+            content = response.choices[0].message.content
+            new_msg_history = new_msg_history + [{"role": "assistant", "content": content}]
+        else:  # Direct Anthropic case
+            print("Debug: Using direct Anthropic client")
+            new_msg_history = msg_history + [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": msg,
+                        }
+                    ],
+                }
+            ]
+            response = client.messages.create(
+                model=model,
+                max_tokens=MAX_NUM_TOKENS,
+                temperature=temperature,
+                system=system_message,
+                messages=new_msg_history,
+            )
+            content = response.content[0].text
+            new_msg_history = new_msg_history + [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": content,
+                        }
+                    ],
+                }
+            ]
     elif "gpt" in model:
         new_msg_history = msg_history + [{"role": "user", "content": msg}]
         response = make_llm_call(
@@ -380,9 +546,75 @@ def extract_json_between_markers(llm_output: str) -> dict | None:
 
 
 def create_client(model) -> tuple[Any, str]:
-    if model.startswith("claude-"):
+    if model.startswith("claude-") and "-OR" in model:
+        print(f"Using OpenRouter API with model {model}.")
+        return (
+            openai.OpenAI(
+                api_key=os.environ["OPENROUTER_API_KEY"],
+                base_url="https://openrouter.ai/api/v1",
+            ),
+            model.replace("-OR", ""),
+        )
+    elif model.startswith("claude-"):
         print(f"Using Anthropic API with model {model}.")
         return anthropic.Anthropic(), model
+    elif model.startswith("gemini") and "-OR" in model:
+        print(f"Using OpenRouter API with Gemini model {model}.")
+        return (
+            openai.OpenAI(
+                api_key=os.environ["OPENROUTER_API_KEY"],
+                base_url="https://openrouter.ai/api/v1",
+            ),
+            model.replace("-OR", ""),
+        )
+    elif model.startswith("gemini"):
+        print(f"Debug: Using OpenRouter API for Gemini model: {model}")
+        # Remove any -OR suffix if present
+        model = model.replace("-OR", "")
+        # Use the correct OpenRouter model ID format
+        model = "google/gemini-2.5-pro-preview-03-25"
+        print(f"Debug: Final model ID: {model}")
+        
+        # Build message history in OpenAI format
+        new_msg_history = []
+        if system_message:
+            print("Debug: Adding system message")
+            new_msg_history.append({"role": "system", "content": system_message})
+        
+        if msg_history:
+            print(f"Debug: Processing {len(msg_history)} existing messages")
+            for i, msg in enumerate(msg_history):
+                print(f"Debug: Message {i}: role={msg['role']}, content length={len(msg['content'])}")
+                new_msg_history.append({"role": msg["role"], "content": msg["content"]})
+        
+        print(f"Debug: Adding current user message: {len(msg)} characters")
+        new_msg_history.append({"role": "user", "content": msg})
+        
+        print(f"Debug: Final message count: {len(new_msg_history)}")
+        print("Debug: Message structure:")
+        for i, msg in enumerate(new_msg_history):
+            print(f"  {i}. {msg['role']}: {len(msg['content'])} chars")
+        
+        try:
+            # Make the API call
+            print("Debug: Making API call to OpenRouter")
+            response = client.chat.completions.create(
+                model=model,
+                messages=new_msg_history,
+                temperature=temperature,
+                max_tokens=MAX_NUM_TOKENS,
+            )
+            print("Debug: API call completed successfully")
+            content = response.choices[0].message.content
+            print(f"Debug: Response length: {len(content)} characters")
+            
+            # Update message history
+            new_msg_history.append({"role": "assistant", "content": content})
+            print("Debug: Returning response and updated message history")
+            return content, new_msg_history
+        except Exception as e:
+            print(f"Debug: Error in API call: {str(e)}")
+            raise
     elif model.startswith("bedrock") and "claude" in model:
         client_model = model.split("/")[-1]
         print(f"Using Amazon Bedrock with model {client_model}.")
