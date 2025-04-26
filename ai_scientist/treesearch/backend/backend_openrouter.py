@@ -48,7 +48,10 @@ MODEL_MAPPING = {
     "gemma-7b": "google/gemma-7b-it",
     "gemma-2b": "google/gemma-2b-it",
     "gemma-7b-instruct": "google/gemma-7b-it",
-    "gemma-2b-instruct": "google/gemma-2b-it"
+    "gemma-2b-instruct": "google/gemma-2b-it",
+    # Google Gemini models
+    "gemini-1.5-pro": "google/gemini-2.5-pro-preview-03-25",
+    "gemini-1.5-pro-latest": "google/gemini-2.5-pro-preview-03-25"
     # Add more mappings as needed
 }
 
